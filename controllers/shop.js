@@ -1,5 +1,4 @@
 const Product = require('../models/product');
-const Cart = require('../models/cart');
 
 exports.getProducts = (req, res, next) => {
   Product.findAll()
@@ -35,47 +34,127 @@ exports.getIndex = (req, res, next) => {
 };
 
 exports.getCart = (req, res, next) => {
-  Cart.getCart(cart => {
-    Product.fetchAll(products => {
-      const cartProducts = [];
-      for (product of products) {
-        const cartProductData = cart.products.find(
-          prod => prod.id === product.id
-        );
-        if (cartProductData) {
-          cartProducts.push({ productData: product, qty: cartProductData.qty });
-        }
-      }
-      res.render('shop/cart', {
-        path: '/cart',
-        pageTitle: 'Your Cart',
-        products: cartProducts
-      });
+  req.user
+    .getCart()
+    .then((cart) => {
+      return cart
+        .getProducts()
+        .then((products) => {
+          res.render('shop/cart', {
+            path: '/cart',
+            pageTitle: 'Your Cart',
+            products: products,
+          });
+        });
+    })
+    .catch((error) => {
+      console.log(error);
     });
-  });
 };
 
 exports.postCart = (req, res, next) => {
-  const prodId = req.body.productId;
-  Product.findById(prodId, product => {
-    Cart.addProduct(prodId, product.price);
-  });
-  res.redirect('/cart');
+  const { productId } = req.body;
+  let fetchedCart = null;
+  
+  req.user
+    .getCart()
+    .then((cart) => {
+      fetchedCart = cart;
+      return cart.getProducts({ where: { id: productId} });
+    })
+    .then((products) => {
+      const [product] = products || [];
+      const quantity = product
+        ? product.cartItem.quantity + 1
+        : 1;
+      
+      return Promise.resolve({ productId, quantity });
+    })
+    .then(({ productId, quantity }) => {
+      return Product
+        .findByPk(productId)
+        .then((product) => {
+          return fetchedCart.addProduct(product, { through: { quantity } });
+        });
+    })
+    .then(() => {
+      res.redirect('/cart');
+    })
+    .catch((error) => {
+      console.log(error);
+    });
 };
 
 exports.postCartDeleteProduct = (req, res, next) => {
-  const prodId = req.body.productId;
-  Product.findById(prodId, product => {
-    Cart.deleteProduct(prodId, product.price);
-    res.redirect('/cart');
-  });
+  const { productId } = req.body;
+
+  req.user
+    .getCart()
+    .then((cart) => {
+      return cart.getProducts({ where: { id: productId } })
+    })
+    .then((products) => {
+      const [product] = products || [];
+
+      if (!product) return null;
+      return product.cartItem.destroy();
+    })
+    .then((result) => {
+      console.log(result);
+      res.redirect('/cart');
+    })
+    .catch((error) => {
+      console.log(error);
+    });
+};
+
+exports.postOrder = (req, res, next) => {
+  let fetchedCart = null;
+
+  req.user
+    .getCart()
+    .then((cart) => {
+      fetchedCart = cart;
+      return cart.getProducts();
+    })
+    .then((products) => {
+      // console.log(products);
+      req.user
+        .createOrder()
+        .then((order) => {
+          return order.addProducts(products.map((product) => {
+            product.orderItem = { quantity: product.cartItem.quantity };
+            return product;
+          }));
+        })
+        .catch((error) => {
+          console.log(error);
+        });
+    })
+    .then((result) => {
+      return fetchedCart.setProducts(null);
+    })
+    .then((result) => {
+      res.redirect('/orders');
+    })
+    .catch((error) => {
+      console.log(error);
+    });
 };
 
 exports.getOrders = (req, res, next) => {
-  res.render('shop/orders', {
-    path: '/orders',
-    pageTitle: 'Your Orders'
-  });
+  req.user
+    .getOrders({ include: ['products'] }) // eager loading
+    .then((orders) => {
+      res.render('shop/orders', {
+        path: '/orders',
+        pageTitle: 'Your Orders',
+        orders,
+      })
+    })
+    .catch((error) => {
+      console.log(error);
+    });
 };
 
 exports.getCheckout = (req, res, next) => {
